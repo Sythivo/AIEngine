@@ -1,0 +1,10 @@
+# test scripts
+.tests/
+# templete files
+.presets/
+
+# vscode
+.vscode/
+
+# project config
+*.json

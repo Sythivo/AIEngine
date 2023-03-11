@@ -17,27 +17,37 @@ type AgentParamaters = {
 local RunService = game:GetService("RunService");
 local PathfindingService = game:GetService("PathfindingService");
 
+local modules = script:WaitForChild("modules");
 local libraries = script:WaitForChild("libraries");
 
-local Debug = require(script:WaitForChild("debug"));
+local FFlag = require(modules:WaitForChild("fflag")).new();
+local Debug = require(modules:WaitForChild("debug"));
 local Signal = require(libraries:WaitForChild("signal"));
-local createUniqueAddress = require(script:WaitForChild("address"));
 
 export type Signal<T... = ()> = Signal.SignalClass<T...>;
 
 type Shared = {
-	createUniqueAddress : (size : number, exclude : {string}?) -> string;
 	createSignal : () -> Signal;
 };
 
-export type Mechanism = Shared & {
+type Referenced = {
+	__ref : AI;
+};
+
+export type State = { [string]: any } & {
+	value : number;
+	changed : boolean;
+};
+
+export type Mechanism = Referenced & Shared & {
 	Name : string?;
-	AIState : number;
+
 	OnHeartBeat : Signal<number>;
-	OnStateChange : Signal<number>;
+	OnStateChange : Signal<State>;
 	OnLoaded : Signal;
-	OnState : (self : Mechanism, State : number, Callback : (number) -> ()) -> Signal.Connection;
-	WhileState : (self : Mechanism, State : number, Callback : (number) -> ()) -> Signal.Connection;
+
+	OnState : (self : Mechanism, State : number, Callback : (state : State) -> ()) -> Signal.Connection;
+	WhileState : (self : Mechanism, State : number, Callback : (state : State) -> ()) -> Signal.Connection;
 };
 
 export type AI = Shared & {
@@ -45,12 +55,33 @@ export type AI = Shared & {
 	Mechanisms : {Mechanism};
 	Character : Model;
 	PathAgent : Path;
-	State : number;
+	State : State;
+
 	Heatbeat : RBXScriptConnection;
+
+	EmitState : (self : AI, State : State | number) -> ();
 	createMechanism : () -> Mechanism;
+	LoadMechanism : (self : AI, Mechanism : Mechanism) -> ();
+
+	Physical : Phyiscal;
+	Movement : Movement;
+};
+type Phyiscal = Referenced & {
+	GetHumanoidRoot : (self : Phyiscal) -> (Humanoid, BasePart);
+};
+type Movement = Referenced & {
+	MoveTo : (self : Movement, Position : Vector3) -> RBXScriptSignal;
+	CancelMoveTo : (self : Movement) -> ();
+	SetWalkSpeed : (self : Movement, Speed : number) -> ();
+	ComputePathAsync : (self : Movement, Position : Vector3) -> (number, {PathWaypoint});
+	CyclicLoopAsync : (self : Movement, state : State | number, vectors : {Vector3}, iteration : (number, Vector3) -> number) -> ();
 };
 
 local AIEngine = ({});
+
+AIEngine.FFlag = FFlag;
+
+FFlag:DEFINE("EngineDebuggingLevel", RunService:IsStudio() and 1 or 0);
 
 --// AI Engine Prototype
 AIEngine.prototype = ({});
@@ -87,7 +118,12 @@ function AIEngine.new(character : Model, agent : AgentParamaters?) : AI
 		PathAgent = PathfindingService:CreatePath(agent); --// Pathfinding agent
 	}, AIEngine.prototype);
 
-	self.State = -1; --// State of the AI, default: Unknown(-1)
+	self.Physical = table.clone(self.Physical);
+	self.Physical.__ref = self;
+	self.Movement = table.clone(self.Movement);
+	self.Movement.__ref = self;
+
+	self.State = AIEngine.newState(-1, true); --// State of the AI, default: Unknown(-1)
 
 	self.Heatbeat = RunService.Heartbeat:Connect(function(Step)
 		for _, mechanism in self.Mechanisms do
@@ -97,6 +133,27 @@ function AIEngine.new(character : Model, agent : AgentParamaters?) : AI
 
 	return self;
 end
+
+type newState = (value : number, changed : boolean?) -> State;
+AIEngine.newState = function(value : number, changed : boolean?)
+	return ({
+		value = value;
+		changed = changed;
+	});
+end::newState;
+
+type WaypointToVector = ((waypoints : PathWaypoint) -> Vector3) & ((waypoints : {PathWaypoint}) -> {Vector3});
+AIEngine.WaypointToVector = function(waypoints : PathWaypoint | {PathWaypoint})
+	if (type(waypoints) == "table") then
+		local vectors = table.create(#waypoints);
+		for _, waypoint in waypoints do
+			table.insert(vectors, waypoint.Position);
+		end
+		return vectors;
+	else
+		return waypoints.Position;
+	end
+end::WaypointToVector;
 
 --[[
 	Creates a new mechanism
@@ -108,15 +165,11 @@ function AIEngine.createMechanism() : Mechanism
 		OnLoaded = Signal.new();
 	}, AIEngine.mechanics_prototype);
 
-	self.AIState = -1; --// State of the AI, default: Unknown(-1)
-
 	return self;
 end
 
 AIEngine.prototype.createSignal = Signal.new;
-AIEngine.prototype.createUniqueAddress = createUniqueAddress;
 AIEngine.mechanics_prototype.createSignal = Signal.new;
-AIEngine.mechanics_prototype.createUniqueAddress = createUniqueAddress;
 
 --// AI Methods
 
@@ -125,41 +178,185 @@ function AIEngine.prototype:LoadMechanism(Mechanism : Mechanism)
 		warn("[AIEngine] Mechanism already loaded");
 		return;
 	end
+	if (FFlag.EngineDebuggingLevel >= 2) then
+		local name = Mechanism.Name or "Unnamed";
+		print("[AIEngine] Loading Mechanism:", name);
+	end
 	table.insert(self.Mechanisms, Mechanism);
-	Mechanism.AIState = self.State;
+	Mechanism.__ref = self;
 	Mechanism.OnLoaded:Fire();
 end
 
-function AIEngine.prototype:EmitState(State : number)
-	rawset(self.Isolated, "State", State);
-	for _, mechanism in self.Mechanisms do
-		mechanism.AIState = self.State;
-		mechanism.OnStateChange:Fire(State);
+function AIEngine.prototype:EmitState(state : State | number)
+	if (FFlag.EngineDebuggingLevel >= 3) then
+		print("[AI] State Emitted", state);
 	end
+
+	if (typeof(state) == "number") then
+		local changed = self.State.value ~= state;
+		state = AIEngine.newState(state, changed);
+	end
+
+	rawset(self.Isolated, "State", state);
+	for _, mechanism in self.Mechanisms do
+		mechanism.OnStateChange:Fire(state);
+	end
+end
+
+--[[Physical]] do
+	local Physical = ({});
+
+	function Physical:GetHumanoidRoot()
+		local AI = self.__ref::AI;
+		local Character = AI.Character;
+		if (Character) then
+			local Humanoid = Character:FindFirstChild("Humanoid");
+			if (Humanoid) then
+				local RootPart = Humanoid.RootPart;
+				if (RootPart) then
+					return Humanoid, RootPart;
+				end
+			end
+		end
+		return;
+	end
+
+	AIEngine.prototype.Physical = Physical;
+end
+
+--[[Movement]] do
+	local Movement = ({});
+
+	function Movement:MoveTo(vector : Vector3) : RBXScriptSignal?
+		local AI = self.__ref::AI;
+
+		if (FFlag.EngineDebuggingLevel >= 4) then
+			print("[AI] Moving To Vector<WorldSpace>", vector);
+		end
+		local Humanoid = AI.Physical:GetHumanoidRoot();
+		if (Humanoid) then
+			Humanoid:MoveTo(vector);
+			return Humanoid.MoveToFinished;
+		end
+		return;
+	end
+	
+	function Movement:CancelMoveTo()
+		local AI = self.__ref::AI;
+
+		local Humanoid, RootPart = AI.Physical:GetHumanoidRoot();
+		if (Humanoid) then
+			Humanoid:MoveTo(RootPart.CFrame.Position);
+		end
+	end
+
+	function Movement:CyclicLoopAsync(state : State | number, vectors : {Vector3}, iteration : (number, Vector3) -> number)
+		local AI = self.__ref::AI;
+
+		local DEBUG = FFlag.EngineDebuggingLevel >= 1;
+		
+		local cyclesize = #vectors;
+		local DEBUG_RenderParts;
+		if (DEBUG) then
+			local Debug = AI.Debug;
+			Debug:Clear();
+			DEBUG_RenderParts = table.create(cyclesize);
+			Debug:RenderPoint(vectors[1], Color3.fromRGB(98, 255, 98), "START"):InMemory():SetParent(workspace);
+			for i = 2, cyclesize - 1, 1 do
+				DEBUG_RenderParts[i] = Debug:RenderPoint(vectors[i], Color3.fromRGB(50, 127, 131)):InMemory():SetParent(workspace);
+			end
+			Debug:RenderPoint(vectors[cyclesize], Color3.fromRGB(255, 245, 98), "END"):InMemory():SetParent(workspace);
+		end
+
+		local isStateNumber = typeof(state) == "number";
+		
+		for i, vector : Vector3 in vectors do
+			local action = iteration(i, vector);
+			if (action) then
+				if (action == 1) then
+					return;
+				elseif (action == 2) then
+					continue;
+				end
+			end
+
+			if (isStateNumber) then
+				if (AI.State.value ~= state) then
+					return;
+				end
+			else
+				if (AI.State ~= state) then
+					return;
+				end
+			end
+
+			if (DEBUG) then
+				local LastRenderPart = DEBUG_RenderParts[i - 1];
+				if (LastRenderPart and not LastRenderPart.Locked) then
+					LastRenderPart:SetVisualizer(Color3.fromRGB(50, 127, 131));
+				end
+				local RenderPart = DEBUG_RenderParts[i];
+				if (RenderPart) then
+					RenderPart:SetVisualizer(Color3.fromRGB(98, 247, 255), "TARGET");
+				end
+			end
+			
+			local movementFinished = self:MoveTo(vector);
+			if (movementFinished) then
+				movementFinished:Wait();
+			end
+		end
+	end
+	
+	function Movement:SetWalkSpeed(speed : number)
+		local AI = self.__ref::AI;
+
+		local Humanoid = AI.Physical:GetHumanoidRoot();
+		if (Humanoid) then
+			Humanoid.WalkSpeed = speed;
+		end
+	end
+	
+	function Movement:ComputePathAsync(vector : Vector3)
+		local AI = self.__ref::AI;
+
+		local svector = AI.Character:GetPivot().Position;
+		AI.PathAgent:ComputeAsync(svector, vector);
+		return AI.PathAgent.Status.Value, AI.PathAgent:GetWaypoints();
+	end
+
+	AIEngine.prototype.Movement = Movement;
 end
 
 --// Mechanism Methods
 
-function AIEngine.mechanics_prototype:WhileState(State : number, Callback : (number) -> ())
+function AIEngine.mechanics_prototype:WhileState(State : number, Callback : (state : State) -> ())
+	local AI = self.__ref::AI;
 	local Active = false;
-	local Update = function(NewState : number)
-		if (NewState == State and not Active) then
+	local Update = function(state : State)
+		if (state.value == State and not Active) then
+			if (FFlag.EngineDebuggingLevel >= 3) then
+				print("[AI] Entering StateLoop", State);
+			end
 			Active = true;
-			while (self.AIState == State) do
-				Callback(NewState);
+			while (AI.State.value == State) do
+				Callback(state);
 				self.OnHeartBeat:Wait();
+			end
+			if (FFlag.EngineDebuggingLevel >= 3) then
+				print("[AI] Exitting StateLoop", State);
 			end
 			Active = false;
 		end
 	end
-	Update(self.AIState);
+	Update(AI.State);
 	return self.OnStateChange:Connect(Update);
 end
 
-function AIEngine.mechanics_prototype:OnState(State : number, Callback : (number) -> ())
-	return self.OnStateChange:Connect(function()
-		if (self.AIState == State) then
-			Callback(State);
+function AIEngine.mechanics_prototype:OnState(State : number, Callback : (state : State) -> ())
+	return self.OnStateChange:Connect(function(state : State)
+		if (state.value == State) then
+			Callback(state);
 		end
 	end);
 end

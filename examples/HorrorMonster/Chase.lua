@@ -33,18 +33,18 @@ return function(AI : AIEngine.AI & any, PlayerSolvers : Solvers) : ChaseMechanis
 
 	Mechanism.OnLoaded:Once(function()
 		local Character =  AI.Character;
-		local Humanoid : Humanoid = Character.Humanoid;
 
 		local Render;
 
 		local ReturnToNormalState = function()
-			AI.State = 1;
+			AI:EmitState(1);
 			AI.TargetPlayer = nil;
 			Render = nil;
 		end
 		local EnterToInvestigatingState = function()
-			AI.State = 3;
-			AI.InvestigateDelay = 1;
+			local State = AIEngine.newState(3, true);
+			State.Delay = 1;
+			AI:EmitState(State);
 			Render = nil;
 		end
 
@@ -57,13 +57,14 @@ return function(AI : AIEngine.AI & any, PlayerSolvers : Solvers) : ChaseMechanis
 					end
 					Mechanism.OnChaseStart:Fire(Player);
 				end
-				AI.State = 2;
 				AI.TargetPlayer = Player;
+				AI:EmitState(2);
 			end
 		end)
 
-		Mechanism.OnStateChange:Connect(function(OldState, NewState)
-			if (NewState == 1) then
+		Mechanism.OnStateChange:Connect(function(NewState)
+			if (NewState.value == 1) then
+				AI.TargetPlayer = nil;
 				Mechanism.OnChaseEnded:Fire();
 			end
 		end)
@@ -92,7 +93,7 @@ return function(AI : AIEngine.AI & any, PlayerSolvers : Solvers) : ChaseMechanis
 			
 			Render:SetPosition(TargetPosition - Vector3.new(0,2,0));
 
-			Humanoid:MoveTo(TargetPosition);
+			AI.Movement:MoveTo(TargetPosition);
 		end);
 	end);
 

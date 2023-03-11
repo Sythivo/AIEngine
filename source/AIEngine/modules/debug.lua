@@ -7,11 +7,12 @@
 
 local RunService = game:GetService("RunService");
 
-local Memory = require(script.Parent:WaitForChild("libraries"):WaitForChild("memory"));
+local AIEngine = script.Parent.Parent;
+local libraries = AIEngine:WaitForChild("libraries");
+
+local Memory = require(libraries:WaitForChild("memory"));
 
 local debug = ({});
-
-debug.Enabled = RunService:IsStudio();
 
 debug.prototype = {};
 debug.prototype.__index = debug.prototype;
@@ -94,7 +95,6 @@ end
 
 function debug.new()
 	return (setmetatable({
-		Enabled = debug.Enabled;
 		Memory = Memory.new();
 	}, debug.prototype));
 end

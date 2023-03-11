@@ -20,30 +20,15 @@ return function(AI : AIEngine.AI & any, PlayerSolvers : Solvers)
 	
 	Mechanism.Name = "Investigate";
 
-	local Debug = AI.Debug;
-
-	Mechanism.Unique = "";
-	Mechanism.UniqueQueues = {};
-
-	local RemoveUniqueId = function(UniqueId : string)
-		local id = table.find(Mechanism.UniqueQueues, UniqueId);
-		if (id) then
-			table.remove(Mechanism.UniqueQueues, id);
-		end
-	end
-
 	Mechanism.OnLoaded:Once(function()
 		local Character =  AI.Character;
-		local Humanoid : Humanoid = Character.Humanoid;
 
 		local ReturnToNormalState = function()
-			AI.State = 1;
+			AI:EmitState(1);
 			AI.TargetPlayer = nil;
 		end
 
-		local PathAgent = AI.PathAgent;
-
-		local Investigate = function(UniqueId)
+		local Investigate = function(State : AIEngine.State)
 			local TargetPlayer : Player = AI.TargetPlayer;
 			if (not TargetPlayer) then
 				ReturnToNormalState();
@@ -55,7 +40,7 @@ return function(AI : AIEngine.AI & any, PlayerSolvers : Solvers)
 				return;
 			end
 
-			task.wait(AI.InvestigateDelay or 1);
+			task.wait(State.Delay or 1);
 			--// Just to make sure the player is still there
 			TargetCharacter = TargetPlayer.Character;
 			if (not TargetCharacter or not PlayerSolvers.Validate(Character, TargetPlayer)) then
@@ -64,60 +49,28 @@ return function(AI : AIEngine.AI & any, PlayerSolvers : Solvers)
 			end
 			local PlayerPivot = TargetCharacter:GetPivot();
 			local TargetPosition = PlayerPivot.Position;
-			PathAgent:ComputeAsync((AI.Character.PrimaryPart::BasePart).Position, TargetPosition);
-			if (AI.State ~= 3 or Mechanism.Unique ~= UniqueId) then
+
+			local status, Waypoints = AI.Movement:ComputePathAsync(TargetPosition);
+			if (Mechanism.Unique ~= State) then
 				return;
 			end
-			if (PathAgent.Status == Enum.PathStatus.Success) then
-				local Waypoints = PathAgent:GetWaypoints();
-
-				Debug:Clear();
-				local WaypointsSize = #Waypoints;
-				local RenderParts = table.create(WaypointsSize);
-
-				--// Render the path
-				if (Debug.Enabled) then
-					Debug:RenderPoint(Waypoints[1].Position, Color3.fromRGB(98, 255, 98), "START"):InMemory():SetParent(workspace);
-					for i = 2, WaypointsSize - 1, 1 do
-						RenderParts[i] = Debug:RenderPoint(Waypoints[i].Position, Color3.fromRGB(50, 127, 131)):InMemory():SetParent(workspace);
-					end
-					Debug:RenderPoint(Waypoints[WaypointsSize].Position, Color3.fromRGB(255, 245, 98), "END"):InMemory():SetParent(workspace);
-				end
-
-				for i, Waypoint in Waypoints do
-					--// Check if the AI is still in the investigate state and if the investigate request is the same
-					if (AI.State ~= 3 or Mechanism.Unique ~= UniqueId) then
-						return;
-					end
+			if (status <= 0) then
+				AI.Movement:CyclicLoopAsync(State, AIEngine.WaypointToVector(Waypoints), function(i, vector)
 					if (i == 1) then
-						continue;
+						return 2;
 					end
-					--// Set the visualizer
-					local LastRenderPart = RenderParts[i - 1];
-					if (LastRenderPart and not LastRenderPart.Locked) then
-						LastRenderPart:SetVisualizer(Color3.fromRGB(50, 127, 131));
-					end
-					local RenderPart = RenderParts[i];
-					if (RenderPart) then
-						RenderPart:SetVisualizer(Color3.fromRGB(98, 247, 255), "TARGET");
-					end
-					--// Move to the waypoint
-					Humanoid:MoveTo(Waypoint.Position);
-					Humanoid.MoveToFinished:Wait();
-				end
+					return;
+				end);
 			end
-			if (AI.State ~= 3) then
+			if (Mechanism.Unique ~= State) then
 				return;
 			end
 			ReturnToNormalState();
 		end
 
-		Mechanism:OnState(3, function()
-			local UniqueId = Mechanism.createUniqueAddress(4, Mechanism.UniqueQueues);
-			table.insert(Mechanism.UniqueQueues, UniqueId);
-			Mechanism.Unique = UniqueId;
-			Investigate(UniqueId);
-			RemoveUniqueId(UniqueId);
+		Mechanism:OnState(3, function(state)
+			Mechanism.Unique = state;
+			Investigate(state);
 		end)
 	end);
 

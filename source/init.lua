@@ -42,8 +42,6 @@ export type State = { [string]: any } & {
 export type Mechanism = Referenced & Shared & {
 	Name : string?;
 
-	OnHeartBeat : Signal<number>;
-	OnStateChange : Signal<State>;
 	OnLoaded : Signal;
 
 	OnState : (self : Mechanism, State : number, Callback : (state : State) -> ()) -> Signal.Connection;
@@ -54,8 +52,14 @@ export type AI = Shared & {
 	Debug : typeof(Debug.new());
 	Mechanisms : {Mechanism};
 	Character : Model;
+	PathAgentParams : AgentParamaters?;
 	PathAgent : Path;
 	State : State;
+
+	OnHeartBeat : Signal<number>;
+	OnStateChange : Signal<State>;
+	OnFallingLimit : Signal<>;
+	Destroyed : Signal<>;
 
 	Heatbeat : RBXScriptConnection;
 
@@ -67,15 +71,29 @@ export type AI = Shared & {
 	Movement : Movement;
 };
 type Phyiscal = Referenced & {
-	GetHumanoidRoot : (self : Phyiscal) -> (Humanoid, BasePart);
+	GetHumanoidRoot : (self : Phyiscal) -> (Humanoid?, BasePart?);
+	OnTouched : (self : Phyiscal, callback : (part : BasePart) -> (), onlyChild : boolean?) -> {RBXScriptConnection};
 };
 type Movement = Referenced & {
+	MovingSpeed : number;
+	
 	MoveTo : (self : Movement, Position : Vector3) -> RBXScriptSignal;
+	IsStuck : (self : Movement) -> boolean;
+	IsMoving : (self : Movement) -> boolean;
 	CancelMoveTo : (self : Movement) -> ();
 	SetWalkSpeed : (self : Movement, Speed : number) -> ();
 	ComputePathAsync : (self : Movement, Position : Vector3) -> (number, {PathWaypoint});
 	CyclicLoopAsync : (self : Movement, state : State | number, vectors : {Vector3}, iteration : (number, Vector3) -> number) -> ();
 };
+
+local GeometricXZPlane = Vector3.new(1,0,1);
+local ToXZPlane = function(vector : Vector3) : Vector3
+	return (GeometricXZPlane * vector);
+end
+
+local FloorResolution = function(num : number, resolution : number) : number
+	return math.floor(num*resolution)/resolution;
+end
 
 local AIEngine = ({});
 
@@ -115,21 +133,39 @@ function AIEngine.new(character : Model, agent : AgentParamaters?) : AI
 		Debug = Debug.new(); --// Debugging
 		Mechanisms = ({}); --// List of mechanisms
 		Character = character; --// Character
+		PathAgentParams = agent; --// Pathfinding agent parameters
 		PathAgent = PathfindingService:CreatePath(agent); --// Pathfinding agent
+
+		OnHeartBeat = Signal.new(); --// Heartbeat signal
+		OnStateChange = Signal.new(); --// State change signal
+		
+		OnFallingLimit = Signal.new(); --// FallingLimit signal
+		Destroyed = Signal.new(); --// FallingLimit signal
 	}, AIEngine.prototype);
 
 	self.Physical = table.clone(self.Physical);
-	self.Physical.__ref = self;
+	self.Physical.__ref = self; self.Physical:__init();
 	self.Movement = table.clone(self.Movement);
-	self.Movement.__ref = self;
+	self.Movement.__ref = self; self.Movement:__init();
 
 	self.State = AIEngine.newState(-1, true); --// State of the AI, default: Unknown(-1)
 
 	self.Heatbeat = RunService.Heartbeat:Connect(function(Step)
-		for _, mechanism in self.Mechanisms do
-			mechanism.OnHeartBeat:Fire(Step);
-		end
+		self.OnHeartBeat:Fire(Step);
 	end);
+
+	if (FFlag.EngineDebuggingLevel >= 2) then
+		local Debug = self.Debug;
+		local Humanoid, RootPart = self.Physical:GetHumanoidRoot();
+		if (Humanoid and RootPart) then
+			local WalkingPoint = Debug:RenderPoint(Humanoid.WalkToPoint, Color3.fromRGB(0, 165, 96), "Humanoid Walk Point");
+			self.OnHeartBeat:Connect(function(deltaTime)
+				WalkingPoint.element.Position = WalkingPoint.element.Position:Lerp(Humanoid.WalkToPoint, math.clamp(deltaTime/60, 0, 1));
+				WalkingPoint:SetPosition(Humanoid.WalkToPoint);
+			end)
+			WalkingPoint:SetParent(workspace);
+		end
+	end
 
 	return self;
 end
@@ -160,8 +196,6 @@ end::WaypointToVector;
 ]]
 function AIEngine.createMechanism() : Mechanism
 	local self = setmetatable({
-		OnHeartBeat = Signal.new();
-		OnStateChange = Signal.new();
 		OnLoaded = Signal.new();
 	}, AIEngine.mechanics_prototype);
 
@@ -198,13 +232,27 @@ function AIEngine.prototype:EmitState(state : State | number)
 	end
 
 	rawset(self.Isolated, "State", state);
-	for _, mechanism in self.Mechanisms do
-		mechanism.OnStateChange:Fire(state);
-	end
+	self.OnStateChange:Fire(state);
 end
 
 --[[Physical]] do
-	local Physical = ({});
+	local Physical = ({
+		__init = function(self)
+			local AI = self.__ref::AI;
+			local _, RootPart = self:GetHumanoidRoot();
+			local _, Size = AI.Character:GetBoundingBox();
+			
+			RootPart.Destroying:Once(function()
+				AI.Destroyed:Fire();
+			end);
+			local limitHeight = workspace.FallenPartsDestroyHeight/2;
+			RunService.Stepped:Connect(function()
+				if (limitHeight + Size.Y > RootPart.Position.Y) then
+					AI.OnFallingLimit:Fire();
+				end
+			end)
+		end
+	});
 
 	function Physical:GetHumanoidRoot()
 		local AI = self.__ref::AI;
@@ -221,11 +269,40 @@ end
 		return;
 	end
 
+	function Physical:OnTouched(callback : (part : BasePart) -> (), onlyChild : boolean?)
+		local AI = self.__ref::AI;
+		local connections = {};
+		local Character = AI.Character;
+		for _, v in onlyChild and Character:GetChildren() or Character:GetDescendants() do
+			if (v:IsA("BasePart")) then
+				table.insert(connections, v.Touched:Connect(callback));
+			end
+		end
+		if (#connections >= 20) then
+			warn(`[AIEngine] You may experience degraded performance, due to high amount of connected touch events: {#connections}`);
+			if (not onlyChild) then
+				warn(`[AIEngine] Suggestion: Consider using 'onlyChild' parameter or a dedicated Part for touch events`);
+			end
+		end
+		return connections;
+	end
+
 	AIEngine.prototype.Physical = Physical;
 end
 
 --[[Movement]] do
-	local Movement = ({});
+	local Movement = ({
+		__init = function(self)
+			local AI = self.__ref::AI;
+			local Humanoid = AI.Physical:GetHumanoidRoot();
+			if (Humanoid) then
+				self.Running = Humanoid.Running:Connect(function(speed : number)
+					self.MovingSpeed = speed;
+				end)
+			end
+			self.MovingSpeed = 0;
+		end
+	});
 
 	function Movement:MoveTo(vector : Vector3) : RBXScriptSignal?
 		local AI = self.__ref::AI;
@@ -250,9 +327,48 @@ end
 		end
 	end
 
-	function Movement:CyclicLoopAsync(state : State | number, vectors : {Vector3}, iteration : (number, Vector3) -> number)
+	function Movement:IsMoving()
+		return self.MovingSpeed > 0;
+	end
+
+	function Movement:IsStuck()
 		local AI = self.__ref::AI;
 
+		local Humanoid, RootPart = AI.Physical:GetHumanoidRoot();
+		if (Humanoid) then
+			local PointDistance = (ToXZPlane(RootPart.CFrame.Position) - ToXZPlane(Humanoid.WalkToPoint)).Magnitude;
+			if (PointDistance <= 0.25) then
+				return false;
+			end
+			
+			if (FloorResolution(ToXZPlane(RootPart.AssemblyLinearVelocity).Magnitude, 10) == 0 and 
+				FloorResolution(RootPart.AssemblyAngularVelocity.Magnitude, 10) == 0) then
+				return true;
+			end
+		end
+		return false
+	end
+
+	function Movement:CyclicLoopAsync(state : State | number, vectors : {Vector3}, iteration : (number, Vector3) -> number, lifeWait : number?)
+		if (#vectors == 0) then
+			return;
+		end
+		
+		local optimizedVectors = table.clone(vectors);
+		for i = #optimizedVectors, 1, -1 do
+			local last = optimizedVectors[i - 1];
+			local vector = optimizedVectors[i];
+			if (last and vector and (vector - last).Magnitude <= 0.2) then
+				table.remove(optimizedVectors, i);
+			end
+		end
+		
+		vectors = optimizedVectors;
+
+		local AI = self.__ref::AI;
+		
+		local Humanoid = AI.Physical:GetHumanoidRoot();
+		
 		local DEBUG = FFlag.EngineDebuggingLevel >= 1;
 		
 		local cyclesize = #vectors;
@@ -270,11 +386,34 @@ end
 
 		local isStateNumber = typeof(state) == "number";
 		
+		local CompletedReason = 0;
+		local startedTime = time() + (lifeWait or 4);
+
+		local HeartbeatConnection : RBXScriptConnection;
+		HeartbeatConnection = AI.OnHeartBeat:Connect(function()
+			if (self:IsStuck()) then
+				if (startedTime <= time()) then
+					HeartbeatConnection:Disconnect();
+					if (FFlag.EngineDebuggingLevel >= 3) then
+						print("[AI] Stuck");
+					end
+					CompletedReason = 1;
+					self:CancelMoveTo();
+				elseif (Humanoid) then
+					self:MoveTo(Humanoid.WalkToPoint);
+				end
+			end
+		end);
+
 		for i, vector : Vector3 in vectors do
+			if (CompletedReason ~= 0) then
+				break;
+			end
 			local action = iteration(i, vector);
 			if (action) then
 				if (action == 1) then
-					return;
+					CompletedReason = 2;
+					break;
 				elseif (action == 2) then
 					continue;
 				end
@@ -282,12 +421,12 @@ end
 
 			if (isStateNumber) then
 				if (AI.State.value ~= state) then
-					return;
+					CompletedReason = -1;
+					break;
 				end
-			else
-				if (AI.State ~= state) then
-					return;
-				end
+			elseif (AI.State ~= state) then
+				CompletedReason = -1;
+				break;
 			end
 
 			if (DEBUG) then
@@ -306,6 +445,12 @@ end
 				movementFinished:Wait();
 			end
 		end
+		
+		if (HeartbeatConnection.Connected) then
+			HeartbeatConnection:Disconnect();
+		end
+
+		return CompletedReason;
 	end
 	
 	function Movement:SetWalkSpeed(speed : number)
@@ -333,15 +478,15 @@ end
 function AIEngine.mechanics_prototype:WhileState(State : number, Callback : (state : State) -> ())
 	local AI = self.__ref::AI;
 	local Active = false;
-	local Update = function(state : State)
-		if (state.value == State and not Active) then
+	local Update = function()
+		if (AI.State.value == State and not Active) then
 			if (FFlag.EngineDebuggingLevel >= 3) then
 				print("[AI] Entering StateLoop", State);
 			end
 			Active = true;
 			while (AI.State.value == State) do
-				Callback(state);
-				self.OnHeartBeat:Wait();
+				Callback(AI.State);
+				AI.OnHeartBeat:Wait();
 			end
 			if (FFlag.EngineDebuggingLevel >= 3) then
 				print("[AI] Exitting StateLoop", State);
@@ -349,12 +494,13 @@ function AIEngine.mechanics_prototype:WhileState(State : number, Callback : (sta
 			Active = false;
 		end
 	end
-	Update(AI.State);
-	return self.OnStateChange:Connect(Update);
+	task.spawn(Update);
+	return AI.OnStateChange:Connect(Update);
 end
 
 function AIEngine.mechanics_prototype:OnState(State : number, Callback : (state : State) -> ())
-	return self.OnStateChange:Connect(function(state : State)
+	local AI = self.__ref::AI;
+	return AI.OnStateChange:Connect(function(state : State)
 		if (state.value == State) then
 			Callback(state);
 		end

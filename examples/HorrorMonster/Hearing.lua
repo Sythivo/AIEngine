@@ -28,14 +28,17 @@ return function(AI : AIEngine.AI & any, PlayerHearingSolvers : HearingSolvers)
 
 		local HeardPlayers = {};
 
-		Mechanism.OnHeartBeat:Connect(function()
+		AI.OnHeartBeat:Connect(function()
+			if (AI.State.value ~= 1) then
+				return;
+			end
 			local CharacterPivot = Character:GetPivot();
 			local Players = PlayerHearingSolvers.Scanner(Character, Players:GetPlayers());
 			for i, Player in Players do
 				if ((HeardPlayers[Player] or 0) < time()) then
 					HeardPlayers[Player] = time() + 5; --// Cooldown
-					AI.TargetPlayer = Player;
 					local State = AIEngine.newState(3, true);
+					State.Player = Player;
 					State.Delay = 0;
 					AI:EmitState(State);
 

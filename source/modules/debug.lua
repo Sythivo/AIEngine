@@ -5,8 +5,6 @@
 	author: Sythivo
 --]=]
 
-local RunService = game:GetService("RunService");
-
 local AIEngine = script.Parent.Parent;
 local libraries = AIEngine:WaitForChild("libraries");
 

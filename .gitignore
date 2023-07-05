@@ -7,4 +7,11 @@
 .vscode/
 
 # project config
-*.json
+test.project.json
+sourcemap.json
+
+# rojo
+aftman.toml
+
+# private files
+.private/

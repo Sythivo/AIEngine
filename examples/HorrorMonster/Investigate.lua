@@ -25,11 +25,10 @@ return function(AI : AIEngine.AI & any, PlayerSolvers : Solvers)
 
 		local ReturnToNormalState = function()
 			AI:EmitState(1);
-			AI.TargetPlayer = nil;
 		end
 
 		local Investigate = function(State : AIEngine.State)
-			local TargetPlayer : Player = AI.TargetPlayer;
+			local TargetPlayer : Player = State.Player;
 			if (not TargetPlayer) then
 				ReturnToNormalState();
 				return;
@@ -63,6 +62,9 @@ return function(AI : AIEngine.AI & any, PlayerSolvers : Solvers)
 				end);
 			end
 			if (Mechanism.Unique ~= State) then
+				return;
+			end
+			if (AI.State ~= State) then
 				return;
 			end
 			ReturnToNormalState();

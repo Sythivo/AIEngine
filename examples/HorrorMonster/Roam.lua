@@ -31,12 +31,19 @@ return function(AI : AIEngine.AI, RoamPoints : {Vector3})
 				return;
 			end
 			if (status <= 0) then
-				AI.Movement:CyclicLoopAsync(1, AIEngine.WaypointToVector(Waypoints), function(i, vector)
+				local context = AI.Movement:CyclicLoopAsync(1, AIEngine.WaypointToVector(Waypoints), function(i, vector)
 					if (i == 1) then
 						return 2;
 					end
 					return;
 				end);
+				if (context == 1) then
+					warn("Roam Stopped from being Stuck");
+				elseif (context == -1) then
+					warn("Roam Interrupted");
+				elseif (context == 2) then
+					warn("Roam Rule Cancel");
+				end
 			end
 			RoamIndex += 1;
 		end);

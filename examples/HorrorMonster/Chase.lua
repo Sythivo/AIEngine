@@ -25,6 +25,7 @@ return function(AI : AIEngine.AI & any, PlayerSolvers : Solvers) : ChaseMechanis
 	local Mechanism : AIEngine.Mechanism & any = AIEngine.createMechanism();
 
 	Mechanism.Name = "Chase";
+	Mechanism.Chasing = false;
 	
 	local Debug = AI.Debug;
 
@@ -43,18 +44,20 @@ return function(AI : AIEngine.AI & any, PlayerSolvers : Solvers) : ChaseMechanis
 		end
 		local EnterToInvestigatingState = function()
 			local State = AIEngine.newState(3, true);
+			State.Player = AI.TargetPlayer;
 			State.Delay = 1;
 			AI:EmitState(State);
 			Render = nil;
 		end
 
-		Mechanism.OnHeartBeat:Connect(function()
+		AI.OnHeartBeat:Connect(function()
 			local Player = PlayerSolvers.Scanner(Character, Players:GetPlayers());
 			if (Player) then
 				if (AI.TargetPlayer ~= Player) then
 					if (AI.TargetPlayer) then
 						Mechanism.OnChaseEnded:Fire(AI.TargetPlayer);
 					end
+					Mechanism.Chasing = true;
 					Mechanism.OnChaseStart:Fire(Player);
 				end
 				AI.TargetPlayer = Player;
@@ -62,10 +65,13 @@ return function(AI : AIEngine.AI & any, PlayerSolvers : Solvers) : ChaseMechanis
 			end
 		end)
 
-		Mechanism.OnStateChange:Connect(function(NewState)
+		AI.OnStateChange:Connect(function(NewState)
 			if (NewState.value == 1) then
 				AI.TargetPlayer = nil;
-				Mechanism.OnChaseEnded:Fire();
+				if (Mechanism.Chasing) then
+					Mechanism.Chasing = false;
+					Mechanism.OnChaseEnded:Fire();
+				end
 			end
 		end)
 

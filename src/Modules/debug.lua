@@ -6,11 +6,11 @@
 --]=]
 
 local AIEngine = script.Parent.Parent;
-local libraries = AIEngine:WaitForChild("libraries");
+local Libraries = AIEngine:WaitForChild("Libraries");
 
-local Memory = require(libraries:WaitForChild("memory"));
+local Memory = require(Libraries:WaitForChild("Memory"));
 
-local debug = ({});
+local debug = {};
 
 debug.prototype = {};
 debug.prototype.__index = debug.prototype;
@@ -176,7 +176,7 @@ function debug.prototype:RenderPoint(Vector : Vector3, Color : Color3, Text : st
 end
 
 function debug.prototype:Clear()
-	self.Memory:Clean();
+	self.Memory:Dispose();
 end
 
 return debug;

@@ -7,7 +7,6 @@
 .vscode/
 
 # project config
-test.project.json
 sourcemap.json
 
 # rojo

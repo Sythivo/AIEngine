@@ -17,14 +17,15 @@ type AgentParamaters = {
 local RunService = game:GetService("RunService");
 local PathfindingService = game:GetService("PathfindingService");
 
-local modules = script:WaitForChild("modules");
-local libraries = script:WaitForChild("libraries");
+local Modules = script:WaitForChild("Modules");
+local Libraries = script:WaitForChild("Libraries");
 
-local FFlag = require(modules:WaitForChild("fflag")).new();
-local Debug = require(modules:WaitForChild("debug"));
-local Signal = require(libraries:WaitForChild("signal"));
+local Signal = require(Libraries:WaitForChild("Signal"));
 
-export type Signal<T... = ()> = Signal.SignalClass<T...>;
+local FFlag = require(Modules:WaitForChild("fflag")).new();
+local Debug = require(Modules:WaitForChild("debug"));
+
+export type Signal<T... = ()> = Signal.Signal<T...>;
 
 type Shared = {
 	createSignal : () -> Signal;
@@ -35,7 +36,7 @@ type Referenced = {
 };
 
 export type State = { [string]: any } & {
-	value : number;
+	value : number | string;
 	changed : boolean;
 };
 
@@ -44,8 +45,8 @@ export type Mechanism = Referenced & Shared & {
 
 	OnLoaded : Signal;
 
-	OnState : (self : Mechanism, State : number, Callback : (state : State) -> ()) -> Signal.Connection;
-	WhileState : (self : Mechanism, State : number, Callback : (state : State) -> ()) -> Signal.Connection;
+	OnState : (self : Mechanism, State : number | string, Callback : (state : State) -> ()) -> Signal.Connection;
+	WhileState : (self : Mechanism, State : number | string, Callback : (state : State) -> ()) -> Signal.Connection;
 };
 
 export type AI = Shared & {
@@ -63,7 +64,7 @@ export type AI = Shared & {
 
 	Heatbeat : RBXScriptConnection;
 
-	EmitState : (self : AI, State : State | number) -> ();
+	EmitState : (self : AI, State : State | number | string) -> ();
 	createMechanism : () -> Mechanism;
 	LoadMechanism : (self : AI, Mechanism : Mechanism) -> ();
 
@@ -83,7 +84,7 @@ type Movement = Referenced & {
 	CancelMoveTo : (self : Movement) -> ();
 	SetWalkSpeed : (self : Movement, Speed : number) -> ();
 	ComputePathAsync : (self : Movement, Position : Vector3) -> (number, {PathWaypoint});
-	CyclicLoopAsync : (self : Movement, state : State | number, vectors : {Vector3}, iteration : (number, Vector3) -> number) -> ();
+	CyclicLoopAsync : (self : Movement, state : State | number | string, vectors : {Vector3}, iteration : (number, Vector3) -> number) -> ();
 };
 
 local GeometricXZPlane = Vector3.new(1,0,1);
@@ -95,11 +96,19 @@ local FloorResolution = function(num : number, resolution : number) : number
 	return math.floor(num*resolution)/resolution;
 end
 
-local AIEngine = ({});
+local function IsLiteral(value : any) : boolean
+	return (typeof(value) == "number" or typeof(value) == "string");
+end
+
+local AIEngine = {};
 
 AIEngine.FFlag = FFlag;
 
 FFlag:DEFINE("EngineDebuggingLevel", RunService:IsStudio() and 1 or 0);
+
+AIEngine.FFlags = {
+	EngineDebuggingLevel = "EngineDebuggingLevel";
+};
 
 --// AI Engine Prototype
 AIEngine.prototype = ({});
@@ -170,8 +179,8 @@ function AIEngine.new(character : Model, agent : AgentParamaters?) : AI
 	return self;
 end
 
-type newState = (value : number, changed : boolean?) -> State;
-AIEngine.newState = function(value : number, changed : boolean?)
+type newState = (value : number | string, changed : boolean?) -> State;
+AIEngine.newState = function(value : number | string, changed : boolean?)
 	return ({
 		value = value;
 		changed = changed;
@@ -221,14 +230,14 @@ function AIEngine.prototype:LoadMechanism(Mechanism : Mechanism)
 	Mechanism.OnLoaded:Fire();
 end
 
-function AIEngine.prototype:EmitState(state : State | number)
+function AIEngine.prototype:EmitState(state : State | number | string)
 	if (FFlag.EngineDebuggingLevel >= 3) then
 		print("[AI] State Emitted", state);
 	end
 
-	if (typeof(state) == "number") then
+	if (IsLiteral(state)) then
 		local changed = self.State.value ~= state;
-		state = AIEngine.newState(state, changed);
+		state = AIEngine.newState(state::(number|string), changed);
 	end
 
 	rawset(self.Isolated, "State", state);
@@ -349,7 +358,7 @@ end
 		return false
 	end
 
-	function Movement:CyclicLoopAsync(state : State | number, vectors : {Vector3}, iteration : (number, Vector3) -> number, lifeWait : number?)
+	function Movement:CyclicLoopAsync(state : State | number | string, vectors : {Vector3}, iteration : (number, Vector3) -> number, lifeWait : number?)
 		if (#vectors == 0) then
 			return;
 		end
@@ -384,7 +393,7 @@ end
 			Debug:RenderPoint(vectors[cyclesize], Color3.fromRGB(255, 245, 98), "END"):InMemory():SetParent(workspace);
 		end
 
-		local isStateNumber = typeof(state) == "number";
+		local isStateLiteral = IsLiteral(state);
 		
 		local CompletedReason = 0;
 		local startedTime = time() + (lifeWait or 4);
@@ -419,7 +428,7 @@ end
 				end
 			end
 
-			if (isStateNumber) then
+			if (isStateLiteral) then
 				if (AI.State.value ~= state) then
 					CompletedReason = -1;
 					break;
@@ -475,7 +484,7 @@ end
 
 --// Mechanism Methods
 
-function AIEngine.mechanics_prototype:WhileState(State : number, Callback : (state : State) -> ())
+function AIEngine.mechanics_prototype:WhileState(State : number | string, Callback : (state : State) -> ())
 	local AI = self.__ref::AI;
 	local Active = false;
 	local Update = function()
@@ -498,7 +507,7 @@ function AIEngine.mechanics_prototype:WhileState(State : number, Callback : (sta
 	return AI.OnStateChange:Connect(Update);
 end
 
-function AIEngine.mechanics_prototype:OnState(State : number, Callback : (state : State) -> ())
+function AIEngine.mechanics_prototype:OnState(State : number | string, Callback : (state : State) -> ())
 	local AI = self.__ref::AI;
 	return AI.OnStateChange:Connect(function(state : State)
 		if (state.value == State) then

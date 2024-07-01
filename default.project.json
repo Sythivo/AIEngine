@@ -1,6 +1,6 @@
 {
 	"name": "AIEngine",
 	"tree": {
-		"$path": "./source"
+		"$path": "./src"
 	}
 }

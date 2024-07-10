@@ -35,7 +35,7 @@ export type SignalPrototype<T...> = {
 
 export type Signal<T... = ()> = typeof(
 	setmetatable(
-		{connections={}::{Connection}; parallel_connections={}::{Connection}},
+		{destroyed=(nil::any)::boolean; connections={}::{Connection}; parallel_connections={}::{Connection}},
 		{}::SignalPrototype<T...>
 	)
 );
@@ -45,12 +45,16 @@ Signal.__index = Signal;
 
 function Signal.new<T...>() : Signal<T...>
 	return setmetatable({
+		destroyed = false;
 		connections = {}::{Connection};
 		parallel_connections = {}::{Connection};
 	}, Signal);
 end
 
 function Signal:Connect<T...>(func: (T...) -> ())
+	if (self.destroyed) then
+		error("[Signal] Cannot connect signal while destroyed", 2);
+	end
 	local connection = Connection.new(func);
 	
 	table.insert(self.connections, connection);
@@ -59,6 +63,9 @@ function Signal:Connect<T...>(func: (T...) -> ())
 end
 
 function Signal:ConnectParallel<T...>(func: (T...) -> ())
+	if (self.destroyed) then
+		error("[Signal] Cannot connect signal while destroyed", 2);
+	end
 	local connection = Connection.new(func);
 	
 	table.insert(self.parallel_connections, connection);
@@ -67,6 +74,9 @@ function Signal:ConnectParallel<T...>(func: (T...) -> ())
 end
 
 function Signal:Fire<T...>(...) : ()
+	if (self.destroyed) then
+		error("[Signal] Cannot call signal while destroyed", 2);
+	end
 	for _, connection in self.parallel_connections do
 		if (connection.Connected) then
 			task.spawn(function(...)
@@ -116,12 +126,16 @@ function Signal:Once<T...>(func: (T...) -> ()) : Connection
 end
 
 function Signal:Clone<T...>() : Signal<T...>
+	if (self.destroyed) then
+		error("[Signal] Cannot clone signal while destroyed", 2);
+	end
 	return Signal.new();
 end
 
 function Signal:Destroy()
-	table.clear(self.parallel_listeners);
-	table.clear(self.listeners);
+	self.destroyed = true;
+	table.clear(self.parallel_connections);
+	table.clear(self.connections);
 end
 
 return table.freeze(Signal);
